@@ -1,8 +1,13 @@
 /**
  * Model Registry
  *
- * Maps task types to optimal AI models. Different models have different
- * specialties — the agents determine the best model depending on the task.
+ * Maps task types to optimal AI models / providers.
+ *
+ * Providers:
+ *   - Images:  fal.ai → Nano Banana 2 (fal-media-generator) — cheapest option
+ *   - Videos:  fal.ai → Kling 2.6 (default, cheapest), 3.0, 3.0 Omni
+ *   - Voice:   ElevenLabs API (eleven_multilingual_v2)
+ *   - Editing: Remotion (local render)
  */
 
 const MODEL_REGISTRY = {
@@ -12,18 +17,30 @@ const MODEL_REGISTRY = {
     capabilities: ["script", "shotlist", "voiceover-text", "brand-copy"],
   },
   image: {
-    id: "image-generation",
-    description: "Storyboard frames, brand visuals, keyframes",
+    id: "fal-ai/fal-media-generator",
+    provider: "fal.ai",
+    name: "Nano Banana 2",
+    description: "Image generation via fal.ai — txt2img + img2img for consistency",
     capabilities: ["storyboard", "keyframe", "brand-logo", "brand-palette"],
+    costTier: "low",
   },
   video: {
-    id: "video-generation",
-    description: "Video clips from keyframes or text prompts",
+    id: "fal-ai/kling-video/v2",
+    provider: "fal.ai",
+    name: "Kling 2.6 (default)",
+    description: "Video via Kling — auto-selects cheapest model, Kling 2.6 when no lip-sync",
+    variants: {
+      "kling-2.6": { id: "fal-ai/kling-video/v2", lipSync: false, costTier: "low" },
+      "kling-3.0": { id: "fal-ai/kling-video/v3", lipSync: true, costTier: "medium" },
+      "kling-3.0-omni": { id: "fal-ai/kling-video/v3/omni", lipSync: true, costTier: "high" },
+    },
     capabilities: ["keyframe-video", "transition", "motion-graphics"],
   },
   voice: {
-    id: "voice-synthesis",
-    description: "Voiceover narration from script text",
+    id: "elevenlabs",
+    provider: "ElevenLabs",
+    name: "ElevenLabs TTS (eleven_multilingual_v2)",
+    description: "Voiceover narration via ElevenLabs API",
     capabilities: ["narration", "dialogue", "character-voice"],
   },
   music: {
@@ -35,6 +52,13 @@ const MODEL_REGISTRY = {
     id: "sfx-generation",
     description: "Sound effects and foley",
     capabilities: ["foley", "ambient-sfx", "impact", "transition-sfx"],
+  },
+  editing: {
+    id: "remotion",
+    provider: "Remotion (local)",
+    name: "Remotion Video Editor",
+    description: "Video composition and editing via Remotion",
+    capabilities: ["composition", "timeline", "transitions", "audio-mix"],
   },
   vision: {
     id: "vision-analysis",

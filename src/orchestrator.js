@@ -15,9 +15,11 @@ import { Logger } from "./utils/logger.js";
  *
  * Pipeline:
  *   Phase 1 (parallel): ScriptAgent + BrandAgent
- *   Phase 2 (parallel): StoryboardAgent + VoiceoverAgent + MusicAgent + SFXAgent
- *   Phase 3 (depends on Phase 2): VideoAgent
- *   Phase 4 (sequential): ComposerAgent → ReviewAgent
+ *   Phase 2 (parallel): StoryboardAgent (fal.ai Nano Banana 2)
+ *                        + VoiceoverAgent (ElevenLabs)
+ *                        + MusicAgent + SFXAgent
+ *   Phase 3 (APPROVAL GATE): VideoAgent (Kling 2.6/3.0) — only after user says OK
+ *   Phase 4 (sequential): ComposerAgent (Remotion) → ReviewAgent
  */
 export class Orchestrator {
   constructor(config) {
@@ -48,7 +50,9 @@ export class Orchestrator {
     )?.content;
 
     // ── Phase 2: Production (parallel) ──────────────────────────
-    this.log.info("Phase 2/4: Production — Storyboard, Voice, Music, SFX");
+    // Images: fal.ai Nano Banana 2 (txt2img + img2img for consistency)
+    // Voice:  ElevenLabs API
+    this.log.info("Phase 2/4: Production — Storyboard (fal.ai), Voice (ElevenLabs), Music, SFX");
     const [storyboardResult, voiceoverResult, musicResult, sfxResult] =
       await this.parallel([
         new StoryboardAgent().run(brief),
@@ -62,8 +66,17 @@ export class Orchestrator {
       .map((a) => a.content);
     brief.dependencies.keyframes = keyframes;
 
-    // ── Phase 3: Video Generation ───────────────────────────────
-    this.log.info("Phase 3/4: Video Generation");
+    // ── Phase 3: Video Generation (APPROVAL GATE) ───────────────
+    // Videos use Kling via fal.ai — costs money, so we wait for approval.
+    // Default: Kling 2.6 (cheapest, no lip-sync)
+    // If lip-sync needed: Kling 3.0
+    brief.dependencies.videoApproved = this.config.approveVideos || false;
+
+    this.log.info("Phase 3/4: Video Generation (Kling via fal.ai)");
+    if (!brief.dependencies.videoApproved) {
+      this.log.warn(">>> VIDEO APPROVAL REQUIRED <<<");
+      this.log.info("  Review storyboard keyframes above, then re-run with --approve-videos");
+    }
     const videoResult = await new VideoAgent().run(brief);
 
     // ── Collect all assets ──────────────────────────────────────
@@ -78,8 +91,8 @@ export class Orchestrator {
     ];
     brief.dependencies.allAssets = allAssets;
 
-    // ── Phase 4: Compose & Review ───────────────────────────────
-    this.log.info("Phase 4/4: Composition & Quality Review");
+    // ── Phase 4: Compose (Remotion) & Review ────────────────────
+    this.log.info("Phase 4/4: Composition (Remotion) & Quality Review");
     const composerResult = await new ComposerAgent().run(brief);
     allAssets.push(...composerResult.assets);
     brief.dependencies.allAssets = allAssets;
@@ -111,17 +124,22 @@ export class Orchestrator {
       },
       {
         name: "Phase 2: Production",
-        agents: ["StoryboardAgent", "VoiceoverAgent", "MusicAgent", "SFXAgent"],
+        agents: [
+          "StoryboardAgent (fal.ai Nano Banana 2)",
+          "VoiceoverAgent (ElevenLabs)",
+          "MusicAgent",
+          "SFXAgent",
+        ],
         mode: "parallel",
       },
       {
-        name: "Phase 3: Video Generation",
-        agents: ["VideoAgent"],
-        mode: "sequential",
+        name: "Phase 3: Video Generation [APPROVAL GATE]",
+        agents: ["VideoAgent (Kling 2.6/3.0/3.0 Omni via fal.ai)"],
+        mode: "user-approved",
       },
       {
         name: "Phase 4: Compose & Review",
-        agents: ["ComposerAgent", "ReviewAgent"],
+        agents: ["ComposerAgent (Remotion)", "ReviewAgent"],
         mode: "sequential",
       },
     ];

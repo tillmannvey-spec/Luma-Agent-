@@ -8,6 +8,7 @@ export function parseArgs(argv) {
     parallel: 5,
     review: true,
     dryRun: false,
+    approveVideos: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -26,6 +27,9 @@ export function parseArgs(argv) {
         break;
       case "--dry-run":
         config.dryRun = true;
+        break;
+      case "--approve-videos":
+        config.approveVideos = true;
         break;
     }
   }

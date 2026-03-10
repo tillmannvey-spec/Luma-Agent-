@@ -1,30 +1,78 @@
 import { BaseAgent } from "./base-agent.js";
+import { FalClient } from "../clients/fal-client.js";
 
 /**
- * StoryboardAgent — generates visual keyframe descriptions
- * for each shot in the shot list, ready for image/video generation.
+ * StoryboardAgent — generates visual keyframes using fal.ai Nano Banana 2.
+ *
+ * Consistency logic:
+ *   - First keyframe: text-to-image (fresh generation)
+ *   - Subsequent keyframes: image-to-image using previous keyframe
+ *     to maintain visual consistency (same style, characters, colors)
  */
 export class StoryboardAgent extends BaseAgent {
   constructor() {
     super("StoryboardAgent", "image");
+    this.fal = new FalClient();
   }
 
   async plan(brief) {
     return {
       steps: [
         "Receive shot list from ScriptAgent",
-        "Generate visual description for each keyframe",
-        "Define composition, lighting, and mood per frame",
-        "Output storyboard with generation prompts",
+        "Generate first keyframe via text-to-image (Nano Banana 2)",
+        "Generate remaining keyframes via image-to-image for consistency",
+        "Output storyboard with image URLs",
       ],
     };
   }
 
   async execute(plan, brief) {
     const shotList = brief.dependencies?.shotList || this.defaultShotList();
+    const brand = brief.dependencies?.brand;
 
-    this.log.step(1, 2, `Generating ${shotList.length} keyframes...`);
-    const keyframes = shotList.map((shot, i) => this.generateKeyframe(shot, i, brief));
+    this.log.step(1, 2, `Generating ${shotList.length} keyframes via fal.ai Nano Banana 2...`);
+
+    const keyframes = [];
+    let previousImageUrl = null;
+
+    for (let i = 0; i < shotList.length; i++) {
+      const shot = shotList[i];
+      const prompt = this.buildPrompt(shot, i, brief, brand);
+      const needsConsistency = i > 0 && previousImageUrl;
+
+      this.log.info(`  KF-${i + 1}: ${needsConsistency ? "img2img (consistent)" : "txt2img (fresh)"}`);
+
+      let result;
+      if (needsConsistency) {
+        result = await this.fal.imageToImage({
+          prompt,
+          imageUrl: previousImageUrl,
+          strength: 0.65,
+          aspectRatio: "16:9",
+        });
+      } else {
+        result = await this.fal.textToImage({
+          prompt,
+          aspectRatio: "16:9",
+        });
+      }
+
+      const imageUrl = result.images?.[0]?.url || null;
+      previousImageUrl = imageUrl;
+
+      keyframes.push({
+        frameId: `KF-${i + 1}`,
+        shotRef: shot.shotId || `SHOT-${i + 1}`,
+        description: shot.description,
+        visualPrompt: prompt,
+        imageUrl,
+        generationMode: needsConsistency ? "img2img" : "txt2img",
+        model: "fal-ai/fal-media-generator (Nano Banana 2)",
+        aspectRatio: "16:9",
+        duration: shot.duration || "3s",
+        seed: result.seed,
+      });
+    }
 
     this.log.step(2, 2, "Storyboard complete");
 
@@ -35,7 +83,7 @@ export class StoryboardAgent extends BaseAgent {
     }));
   }
 
-  generateKeyframe(shot, index, brief) {
+  buildPrompt(shot, index, brief, brand) {
     const moods = ["mysterious", "dramatic", "elegant", "powerful"];
     const lightings = [
       "low-key chiaroscuro",
@@ -44,15 +92,13 @@ export class StoryboardAgent extends BaseAgent {
       "high contrast spotlight",
     ];
 
-    return {
-      frameId: `KF-${index + 1}`,
-      shotRef: shot.shotId || `SHOT-${index + 1}`,
-      description: shot.description,
-      visualPrompt: `${shot.description}, cinematic, ${moods[index % moods.length]} mood, ${lightings[index % lightings.length]}, 4K, photorealistic`,
-      composition: index === 0 ? "rule-of-thirds" : "centered",
-      aspectRatio: "16:9",
-      duration: shot.duration || "3s",
-    };
+    let prompt = `${shot.description}, cinematic, ${moods[index % moods.length]} mood, ${lightings[index % lightings.length]}, 4K, photorealistic`;
+
+    if (brand?.palette) {
+      prompt += `, color palette: ${brand.palette.primary} and ${brand.palette.secondary}`;
+    }
+
+    return prompt;
   }
 
   defaultShotList() {

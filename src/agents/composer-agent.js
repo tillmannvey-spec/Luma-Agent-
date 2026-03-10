@@ -1,8 +1,14 @@
 import { BaseAgent } from "./base-agent.js";
 
 /**
- * ComposerAgent — assembles all individual assets (video clips, voiceover,
- * music, SFX) into a final composed version with a complete timeline.
+ * ComposerAgent — generates a Remotion project config for video editing.
+ *
+ * Instead of in-memory composition, this agent produces:
+ *   1. A Remotion composition config (timeline, clips, audio layers)
+ *   2. A render command for the final output
+ *
+ * Render with:
+ *   npx remotion render src/remotion/index.tsx MainComp out/final.mp4
  */
 export class ComposerAgent extends BaseAgent {
   constructor() {
@@ -13,9 +19,9 @@ export class ComposerAgent extends BaseAgent {
     return {
       steps: [
         "Collect all video, audio, and text assets",
-        "Build master timeline",
-        "Layer audio tracks (voiceover, music, SFX)",
-        "Render final composition",
+        "Build Remotion composition config",
+        "Generate timeline with transitions",
+        "Output render-ready Remotion project",
       ],
     };
   }
@@ -28,48 +34,46 @@ export class ComposerAgent extends BaseAgent {
     const music = allAssets.filter((a) => a.type === "background-music");
     const sfx = allAssets.filter((a) => a.type === "sound-effect");
 
-    this.log.step(1, 3, "Building master timeline...");
+    this.log.step(1, 3, "Building Remotion timeline...");
     const timeline = this.buildTimeline(clips, voiceovers, music, sfx);
 
-    this.log.step(2, 3, "Layering audio tracks...");
-    const audioMix = this.mixAudio(voiceovers, music, sfx);
+    this.log.step(2, 3, "Generating Remotion config...");
+    const remotionConfig = this.generateRemotionConfig(timeline, clips);
 
-    this.log.step(3, 3, "Rendering final composition...");
-    const composition = {
-      id: "FINAL-COMP",
-      totalDuration: timeline.totalDuration,
-      resolution: "1920x1080",
-      fps: 24,
-      timeline,
-      audioMix,
-      exportFormats: ["mp4", "mov"],
-    };
+    this.log.step(3, 3, "Remotion project ready for render");
 
     return [
-      { type: "final-composition", format: "json", content: composition },
+      { type: "remotion-config", format: "json", content: remotionConfig },
       { type: "timeline", format: "json", content: timeline },
     ];
   }
 
   buildTimeline(clips, voiceovers, music, sfx) {
-    let currentTime = 0;
+    const fps = 30;
+    let currentFrame = 0;
     const entries = [];
 
     clips.forEach((clip, i) => {
-      const duration = this.parseDuration(clip.content?.duration || "3s");
+      const durationSec = this.parseDuration(clip.content?.duration || "5s");
+      const durationFrames = Math.round(durationSec * fps);
+
       entries.push({
         track: "video",
         id: clip.content?.clipId || `CLIP-${i + 1}`,
-        startTime: `${currentTime}s`,
-        duration: `${duration}s`,
+        src: clip.content?.videoUrl || null,
+        startFrame: currentFrame,
+        durationFrames,
+        durationSec,
       });
 
       if (voiceovers[i]) {
         entries.push({
           track: "voiceover",
           id: voiceovers[i].content?.segmentId || `VO-${i + 1}`,
-          startTime: `${currentTime}s`,
-          duration: `${duration}s`,
+          src: voiceovers[i].content?.audio?.path || null,
+          startFrame: currentFrame,
+          durationFrames,
+          volume: 1.0,
         });
       }
 
@@ -77,42 +81,66 @@ export class ComposerAgent extends BaseAgent {
         (s) => s.content?.shotRef === (clip.content?.keyframeRef || `KF-${i + 1}`)
       );
       matchingSfx.forEach((s) => {
+        const sfxOffset = this.parseDuration(s.content?.timing || "0s");
         entries.push({
           track: "sfx",
           id: s.content?.sfxId,
-          startTime: `${currentTime + this.parseDuration(s.content?.timing || "0s")}s`,
-          duration: s.content?.duration || "1s",
+          startFrame: currentFrame + Math.round(sfxOffset * fps),
+          durationFrames: Math.round(this.parseDuration(s.content?.duration || "1s") * fps),
+          volume: 0.7,
         });
       });
 
-      currentTime += duration;
+      currentFrame += durationFrames;
     });
 
     if (music.length > 0) {
       entries.push({
         track: "music",
         id: "BGM-1",
-        startTime: "0s",
-        duration: `${currentTime}s`,
+        startFrame: 0,
+        durationFrames: currentFrame,
+        volume: 0.3,
       });
     }
 
-    return { totalDuration: `${currentTime}s`, entries };
+    return { fps, totalFrames: currentFrame, totalDuration: `${currentFrame / fps}s`, entries };
   }
 
-  mixAudio(voiceovers, music, sfx) {
+  generateRemotionConfig(timeline, clips) {
     return {
-      tracks: [
-        { name: "voiceover", volume: 1.0, count: voiceovers.length },
-        { name: "music", volume: 0.3, count: music.length },
-        { name: "sfx", volume: 0.7, count: sfx.length },
-      ],
-      masterVolume: 1.0,
-      normalization: true,
+      compositionId: "MainComp",
+      fps: timeline.fps,
+      width: 1920,
+      height: 1080,
+      durationInFrames: timeline.totalFrames,
+      sequences: timeline.entries.map((entry) => ({
+        id: entry.id,
+        track: entry.track,
+        from: entry.startFrame,
+        durationInFrames: entry.durationFrames,
+        src: entry.src || null,
+        volume: entry.volume,
+      })),
+      transitions: this.generateTransitions(clips, timeline.fps),
+      renderCommand: "npx remotion render src/remotion/index.tsx MainComp out/final.mp4",
     };
   }
 
+  generateTransitions(clips, fps) {
+    const transitions = [];
+    for (let i = 0; i < clips.length - 1; i++) {
+      transitions.push({
+        from: clips[i].content?.clipId || `CLIP-${i + 1}`,
+        to: clips[i + 1]?.content?.clipId || `CLIP-${i + 2}`,
+        type: i === 0 ? "fade" : "cut",
+        durationFrames: Math.round(0.5 * fps),
+      });
+    }
+    return transitions;
+  }
+
   parseDuration(str) {
-    return parseFloat(str) || 3;
+    return parseFloat(str) || 5;
   }
 }

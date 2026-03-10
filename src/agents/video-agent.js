@@ -1,93 +1,145 @@
 import { BaseAgent } from "./base-agent.js";
+import { KlingClient, KLING_MODELS } from "../clients/kling-client.js";
 
 /**
- * VideoAgent — generates video clips for each storyboard keyframe.
- * Selects the optimal video generation model based on shot requirements.
+ * VideoAgent — generates video clips using Kling models via fal.ai.
+ *
+ * Model selection (cheapest first):
+ *   - Kling 2.6: Default, cheapest. Used when no lip-sync is needed.
+ *   - Kling 3.0: Used when lip-sync is required.
+ *   - Kling 3.0 Omni: Premium, only when explicitly requested.
+ *
+ * IMPORTANT: This agent does NOT auto-execute. The orchestrator will
+ * pause and wait for user approval before generating videos (they cost money).
  */
 export class VideoAgent extends BaseAgent {
   constructor() {
     super("VideoAgent", "video");
+    this.kling = new KlingClient();
   }
 
   async plan(brief) {
     return {
       steps: [
         "Receive keyframes from StoryboardAgent",
-        "Select optimal model per shot type",
+        "Select cheapest suitable Kling model per clip",
+        "Wait for user approval",
         "Generate video clip for each keyframe",
-        "Apply transitions between clips",
       ],
     };
   }
 
   async execute(plan, brief) {
     const keyframes = brief.dependencies?.keyframes || this.defaultKeyframes();
+    const approved = brief.dependencies?.videoApproved || false;
 
-    this.log.step(1, 3, `Processing ${keyframes.length} keyframes...`);
-    const clips = keyframes.map((kf, i) => {
-      this.log.info(`  Generating clip ${i + 1}/${keyframes.length}: ${kf.frameId || `KF-${i + 1}`}`);
-      return this.generateClip(kf, i);
-    });
+    this.log.step(1, 3, `Planning ${keyframes.length} video clips...`);
+    const clipPlans = keyframes.map((kf, i) => this.planClip(kf, i, brief));
 
-    this.log.step(2, 3, "Adding transitions...");
-    const transitions = this.generateTransitions(clips);
+    const summary = this.costSummary(clipPlans);
+    this.log.info(`  Model selection: ${summary}`);
+
+    if (!approved) {
+      this.log.warn("Videos NOT generated — waiting for user approval.");
+      this.log.info("  Run with --approve-videos or confirm in interactive mode.");
+      return clipPlans.map((cp) => ({
+        type: "video-clip",
+        format: "json",
+        content: {
+          ...cp,
+          status: "pending-approval",
+          videoUrl: null,
+        },
+      }));
+    }
+
+    this.log.step(2, 3, `Generating ${keyframes.length} clips via Kling...`);
+    const clips = [];
+
+    for (let i = 0; i < clipPlans.length; i++) {
+      const cp = clipPlans[i];
+      this.log.info(`  Clip ${i + 1}/${clipPlans.length}: ${cp.modelName} — ${cp.keyframeRef}`);
+
+      let result;
+      if (cp.imageUrl) {
+        result = await this.kling.imageToVideo({
+          imageUrl: cp.imageUrl,
+          prompt: cp.prompt,
+          duration: cp.duration,
+          needsLipSync: cp.needsLipSync,
+        });
+      } else {
+        result = await this.kling.textToVideo({
+          prompt: cp.prompt,
+          duration: cp.duration,
+          needsLipSync: cp.needsLipSync,
+        });
+      }
+
+      clips.push({
+        ...cp,
+        status: "generated",
+        videoUrl: result.video?.url || null,
+        modelUsed: result.modelUsed,
+      });
+    }
 
     this.log.step(3, 3, "Video generation complete");
 
-    return [
-      ...clips.map((clip) => ({
-        type: "video-clip",
-        format: "mp4",
-        content: clip,
-      })),
-      { type: "transitions", format: "json", content: transitions },
-    ];
+    return clips.map((clip) => ({
+      type: "video-clip",
+      format: "mp4",
+      content: clip,
+    }));
   }
 
-  generateClip(keyframe, index) {
-    const modelChoice = this.selectModel(keyframe);
+  planClip(keyframe, index, brief) {
+    const prompt = keyframe.visualPrompt || keyframe.description;
+    const needsLipSync = this.detectLipSync(prompt, brief);
+    const model = this.kling.selectModel({ needsLipSync });
+
     return {
       clipId: `CLIP-${index + 1}`,
       keyframeRef: keyframe.frameId || `KF-${index + 1}`,
-      prompt: keyframe.visualPrompt || keyframe.description,
-      duration: keyframe.duration || "3s",
+      imageUrl: keyframe.imageUrl || null,
+      prompt,
+      duration: keyframe.duration || "5s",
+      needsLipSync,
+      modelId: model.id,
+      modelName: model.name,
+      costTier: model.costTier,
       resolution: "1920x1080",
       fps: 24,
-      model: modelChoice,
-      status: "generated",
     };
   }
 
-  selectModel(keyframe) {
-    const prompt = (keyframe.visualPrompt || "").toLowerCase();
-    if (prompt.includes("motion") || prompt.includes("action")) {
-      return { id: "video-gen-motion", reason: "High-motion content" };
-    }
-    if (prompt.includes("photorealistic") || prompt.includes("cinematic")) {
-      return { id: "video-gen-cinematic", reason: "Cinematic realism" };
-    }
-    return { id: "video-gen-standard", reason: "General purpose" };
+  detectLipSync(prompt, brief) {
+    const text = `${prompt} ${brief.prompt || ""}`.toLowerCase();
+    return (
+      text.includes("speaking") ||
+      text.includes("talking") ||
+      text.includes("dialogue") ||
+      text.includes("lip sync") ||
+      text.includes("lipsync")
+    );
   }
 
-  generateTransitions(clips) {
-    const transitions = [];
-    for (let i = 0; i < clips.length - 1; i++) {
-      transitions.push({
-        from: clips[i].clipId,
-        to: clips[i + 1].clipId,
-        type: i === 0 ? "fade" : "cut",
-        duration: "0.5s",
-      });
+  costSummary(clipPlans) {
+    const counts = {};
+    for (const cp of clipPlans) {
+      counts[cp.modelName] = (counts[cp.modelName] || 0) + 1;
     }
-    return transitions;
+    return Object.entries(counts)
+      .map(([name, count]) => `${name} x${count}`)
+      .join(", ");
   }
 
   defaultKeyframes() {
     return [
-      { frameId: "KF-1", description: "Opening shot", duration: "3s" },
+      { frameId: "KF-1", description: "Opening shot", duration: "5s" },
       { frameId: "KF-2", description: "Main subject", duration: "5s" },
-      { frameId: "KF-3", description: "Product close-up", duration: "4s" },
-      { frameId: "KF-4", description: "End card", duration: "3s" },
+      { frameId: "KF-3", description: "Product close-up", duration: "5s" },
+      { frameId: "KF-4", description: "End card", duration: "5s" },
     ];
   }
 }

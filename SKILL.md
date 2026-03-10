@@ -2,27 +2,36 @@
 
 ## Overview
 
-An AI-powered creative production pipeline inspired by [Luma's Creative Agents](https://lumalabs.ai). From a single text prompt, the workflow orchestrates multiple specialized sub-agents running in parallel to produce a comprehensive library of production assets.
+An AI-powered creative production pipeline inspired by Luma's Creative Agents. From a single text prompt, the workflow orchestrates multiple specialized sub-agents running in parallel to produce a comprehensive library of production assets.
 
-## What It Does
+## Providers & APIs
 
-Given a creative brief like:
-> "Create an ad for a luxury watch brand around the concept of borrowed time"
+| Task | Provider | Model | Cost |
+|------|----------|-------|------|
+| **Images** | fal.ai | Nano Banana 2 (`fal-media-generator`) | Low |
+| **Videos** | fal.ai | Kling 2.6 / 3.0 / 3.0 Omni | Low-High |
+| **Voice** | ElevenLabs | `eleven_multilingual_v2` | Per-character |
+| **Editing** | Remotion | Local render | Free |
 
-The skill automatically produces:
+### Image Generation (fal.ai Nano Banana 2)
+- **First keyframe**: Text-to-image (fresh generation)
+- **Subsequent keyframes**: Image-to-image using the previous generated image for **visual consistency** (same style, characters, lighting)
+- Strength parameter: 0.65 (balances consistency vs. variation)
 
-| Asset | Agent | Description |
-|-------|-------|-------------|
-| Script | ScriptAgent | Narrative arc with scenes and dialogue |
-| Shot List | ScriptAgent | Detailed camera directions per shot |
-| Brand Identity | BrandAgent | Logo direction, color palette, typography, style guide |
-| Storyboard | StoryboardAgent | Visual keyframe descriptions with generation prompts |
-| Video Clips | VideoAgent | Video for each keyframe (model auto-selected) |
-| Voiceover | VoiceoverAgent | Narration segments synced to timeline |
-| Background Music | MusicAgent | Contextual score with mood-matched parameters |
-| Sound Effects | SFXAgent | Foley, ambient, impact, and transition sounds |
-| Final Composition | ComposerAgent | Assembled timeline with layered audio mix |
-| QA Report | ReviewAgent | Consistency checks with auto-fix for flagged issues |
+### Video Generation (Kling via fal.ai)
+- **Kling 2.6**: Default, cheapest. No lip-sync support.
+- **Kling 3.0**: Mid-tier. Used when lip-sync is detected.
+- **Kling 3.0 Omni**: Premium. Only when explicitly requested.
+- **IMPORTANT**: Videos are only generated after user approval (`--approve-videos`)
+
+### Voice (ElevenLabs)
+- Uses `eleven_multilingual_v2` model
+- Auto-selects voice preset based on brief tone (luxury → deep-authoritative, etc.)
+- Requires `ELEVENLABS_API_KEY` environment variable
+
+### Video Editing (Remotion)
+- ComposerAgent outputs a Remotion-compatible composition config
+- Render with: `npx remotion render src/remotion/index.tsx MainComp out/final.mp4`
 
 ## Architecture
 
@@ -35,70 +44,62 @@ The skill automatically produces:
                     │  Orchestrator   │
                     └────────┬────────┘
                              │
-            Phase 1 ─────────┤ (parallel)
-            ┌────────────────┼────────────────┐
-            │                │                │
-     ┌──────▼──────┐  ┌─────▼──────┐         │
-     │ ScriptAgent │  │ BrandAgent │         │
-     └──────┬──────┘  └─────┬──────┘         │
-            │                │                │
-            Phase 2 ─────────┤ (parallel)     │
-            ┌───────┬────────┼───────┐        │
-            │       │        │       │        │
-     ┌──────▼┐ ┌────▼──┐ ┌──▼───┐ ┌─▼──┐    │
-     │Story- │ │Voice- │ │Music │ │SFX │    │
-     │board  │ │over   │ │Agent │ │    │    │
-     └──────┬┘ └────┬──┘ └──┬───┘ └─┬──┘    │
-            │       │        │       │        │
-            Phase 3 ─────────┤ (sequential)   │
-            ┌────────────────┤                │
-     ┌──────▼──────┐         │                │
-     │ VideoAgent  │         │                │
-     └──────┬──────┘         │                │
-            │                │                │
-            Phase 4 ─────────┤ (sequential)   │
-     ┌──────▼──────┐  ┌─────▼──────┐         │
-     │  Composer   │──▶  Review    │         │
-     │   Agent     │  │   Agent    │         │
-     └─────────────┘  └────────────┘
+        Phase 1 ─────────────┤ (parallel)
+        ┌────────────────────┼──────────────────┐
+        │                    │                  │
+ ┌──────▼──────┐      ┌─────▼──────┐           │
+ │ ScriptAgent │      │ BrandAgent │           │
+ └──────┬──────┘      └─────┬──────┘           │
+        │                    │                  │
+        Phase 2 ─────────────┤ (parallel)       │
+        ┌──────┬─────────────┼──────┐           │
+        │      │             │      │           │
+ ┌──────▼───┐ ┌▼─────────┐ ┌▼────┐ ┌▼──┐       │
+ │Storyboard│ │Voiceover  │ │Music│ │SFX│       │
+ │fal.ai    │ │ElevenLabs │ │     │ │   │       │
+ │NanoBan.2 │ │           │ │     │ │   │       │
+ └──────┬───┘ └┬──────────┘ └┬────┘ └┬──┘       │
+        │      │              │      │           │
+        Phase 3 ──────────────┤ [APPROVAL GATE]  │
+        ┌─────────────────────┤                  │
+ ┌──────▼──────┐              │                  │
+ │ VideoAgent  │              │                  │
+ │ Kling 2.6/  │              │                  │
+ │ 3.0/Omni    │              │                  │
+ └──────┬──────┘              │                  │
+        │                     │                  │
+        Phase 4 ──────────────┤ (sequential)     │
+ ┌──────▼──────┐       ┌─────▼──────┐           │
+ │  Composer   │──────▶│  Review    │           │
+ │  (Remotion) │       │   Agent    │           │
+ └─────────────┘       └────────────┘
 ```
 
-## Smart Model Selection
+## Setup
 
-Different models have different specialties. Each agent automatically selects the optimal AI model for its task:
+```bash
+# 1. Set API keys
+export FAL_KEY="your_fal_key"
+export ELEVENLABS_API_KEY="your_elevenlabs_key"
 
-- **Text tasks** → text-generation model (scripts, copy)
-- **Image tasks** → image-generation model (storyboards, brand visuals)
-- **Video tasks** → video-generation model (cinematic vs. motion variants)
-- **Voice tasks** → voice-synthesis model (tone-matched narration)
-- **Music tasks** → music-generation model (mood-appropriate scores)
-- **SFX tasks** → sfx-generation model (contextual sound design)
-- **QA tasks** → vision-analysis model (consistency & defect detection)
-
-## Auto-Review & Fix
-
-The ReviewAgent inspects all produced assets for:
-- Missing required asset types
-- Aspect ratio inconsistencies across visual assets
-- Timing mismatches between voiceover and video
-- Visual defects (inconsistent details, artifacts)
-
-Correctable issues are auto-fixed and logged in the QA report.
+# 2. Run (without API keys = dry-run mode)
+node src/index.js --prompt "Create an ad for a luxury watch brand"
+```
 
 ## Usage
 
 ```bash
-# Full workflow
-node src/index.js --prompt "Create an ad for a luxury watch brand around the concept of borrowed time"
+# Dry run — show execution plan only
+node src/index.js --prompt "Your brief" --dry-run
 
-# Dry run (show plan only)
-node src/index.js --prompt "Your creative brief" --dry-run
+# Full run — generates images + voice, videos pending approval
+node src/index.js --prompt "Your brief"
+
+# With video generation approved
+node src/index.js --prompt "Your brief" --approve-videos
 
 # Custom output directory
-node src/index.js --prompt "Your creative brief" --output ./my-output
-
-# Run tests
-npm test
+node src/index.js --prompt "Your brief" --output ./my-output
 ```
 
 ## CLI Options
@@ -107,32 +108,46 @@ npm test
 |------|---------|-------------|
 | `--prompt` | (required) | Creative brief / text prompt |
 | `--output` | `./output` | Output directory for assets |
+| `--approve-videos` | `false` | **Must set to generate videos** (costs money) |
 | `--parallel` | `5` | Max concurrent agents |
 | `--review` | `true` | Enable auto-review & fix |
 | `--dry-run` | `false` | Show execution plan only |
+
+## Environment Variables
+
+| Variable | Required For | Description |
+|----------|-------------|-------------|
+| `FAL_KEY` | Images + Videos | fal.ai API key |
+| `ELEVENLABS_API_KEY` | Voice | ElevenLabs API key |
+
+Without API keys, all agents run in **dry-run mode** (no API calls, simulated results).
 
 ## Project Structure
 
 ```
 src/
-├── index.js              # CLI entry point
-├── orchestrator.js        # Multi-phase pipeline coordinator
+├── index.js                  # CLI entry point
+├── orchestrator.js            # 4-phase pipeline with approval gate
 ├── agents/
-│   ├── base-agent.js      # Base class for all agents
-│   ├── script-agent.js    # Script & shot list generation
-│   ├── brand-agent.js     # Brand identity & style guide
-│   ├── storyboard-agent.js# Visual keyframe descriptions
-│   ├── video-agent.js     # Video clip generation
-│   ├── voiceover-agent.js # Voice narration
-│   ├── music-agent.js     # Background music & score
-│   ├── sfx-agent.js       # Sound effects
-│   ├── composer-agent.js  # Final composition assembly
-│   └── review-agent.js    # QA, flagging & auto-fix
+│   ├── base-agent.js          # Base class for all agents
+│   ├── script-agent.js        # Script & shot list generation
+│   ├── brand-agent.js         # Brand identity & style guide
+│   ├── storyboard-agent.js    # Keyframes via fal.ai Nano Banana 2 (img2img)
+│   ├── video-agent.js         # Video via Kling 2.6/3.0 (approval required)
+│   ├── voiceover-agent.js     # Voice via ElevenLabs API
+│   ├── music-agent.js         # Background music & score
+│   ├── sfx-agent.js           # Sound effects
+│   ├── composer-agent.js      # Remotion composition config
+│   └── review-agent.js        # QA, flagging & auto-fix
+├── clients/
+│   ├── fal-client.js          # fal.ai API (Nano Banana 2 txt2img/img2img)
+│   ├── kling-client.js        # Kling 2.6/3.0/Omni video API
+│   └── elevenlabs-client.js   # ElevenLabs TTS API
 ├── models/
-│   └── registry.js        # Model registry & task mapping
+│   └── registry.js            # Provider & model registry
 ├── utils/
-│   ├── args.js            # CLI argument parser
-│   └── logger.js          # Structured logging
+│   ├── args.js                # CLI argument parser
+│   └── logger.js              # Structured logging
 └── tests/
-    └── workflow.test.js   # Test suite
+    └── workflow.test.js       # Test suite
 ```
