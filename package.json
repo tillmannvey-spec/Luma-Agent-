@@ -1,0 +1,21 @@
+{
+  "name": "luma-creative-agent-workflow",
+  "version": "1.0.0",
+  "description": "AI-powered creative production workflow inspired by Luma's creative agents - orchestrates script writing, storyboarding, video generation, audio production, brand identity, and quality review through parallel sub-agents",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "workflow": "node src/index.js",
+    "test": "node --test src/tests/*.test.js"
+  },
+  "keywords": [
+    "luma",
+    "ai",
+    "creative-agents",
+    "video-production",
+    "workflow",
+    "automation"
+  ],
+  "license": "MIT"
+}
